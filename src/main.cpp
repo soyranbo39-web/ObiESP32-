@@ -8,11 +8,14 @@
 const char *WIFI_SSID = "ASUS_A8_2G";
 const char *WIFI_PASSWORD = "purple_6667";
 
-const char *API_BASE_URL = "http://localhost:5000";
+const char *API_BASE_URL = "http://192.168.50.211:8000";
 const char *API_USERNAME = "admin";
 const char *API_PASSWORD = "123456";
+const char *API_KEY = "";
 
-const char *DEVICE_ID = "esp32-01";
+#ifndef DEVICE_ID
+#define DEVICE_ID "esp32-01"
+#endif
 
 #ifndef PIN_LED_RIEGO
 #define PIN_LED_RIEGO 26
@@ -25,13 +28,13 @@ const char *DEVICE_ID = "esp32-01";
 const unsigned long INTERVALO_SENSORES_MS = 5000;
 const unsigned long INTERVALO_COMANDOS_MS = 2500;
 
-const char *ENDPOINT_REGISTER = "/v1/auth/register";
-const char *ENDPOINT_LOGIN = "/v1/auth/token";
-const char *ENDPOINT_DATOS = "/v1/datos";
-const char *ENDPOINT_CONTROL = "/v1/control";
-const char *ENDPOINT_PENDIENTES = "/v1/comandos/pendientes";
-const char *ENDPOINT_ESTADOS = "/v1/estados";
-const char *ENDPOINT_HISTORIAL = "/v1/historial";
+const char *ENDPOINT_REGISTER = "/auth/register";
+const char *ENDPOINT_LOGIN = "/auth/token";
+const char *ENDPOINT_DATOS = "/datos";
+const char *ENDPOINT_CONTROL = "/control";
+const char *ENDPOINT_PENDIENTES = "/comandos/pendientes";
+const char *ENDPOINT_ESTADO = "/estado";
+const char *ENDPOINT_HISTORIAL = "/historial";
 
 class Actuador {
 public:
@@ -162,11 +165,9 @@ public:
 
     prepararHeadersProtegidos(http);
 
-    StaticJsonDocument<160> doc;
+    StaticJsonDocument<128> doc;
     doc["actuador"] = actuador;
-    doc["estado"] = estado;
-    doc["dispositivo"] = DEVICE_ID;
-    doc["ts"] = millis() / 1000;
+    doc["accion"] = estado;
 
     String payload;
     serializeJson(doc, payload);
@@ -253,8 +254,15 @@ private:
     return String(API_BASE_URL) + String(path);
   }
 
+  void agregarHeaderApiKey(HTTPClient &http) {
+    if (strlen(API_KEY) > 0) {
+      http.addHeader("X-API-Key", API_KEY);
+    }
+  }
+
   void prepararHeadersProtegidos(HTTPClient &http) {
     http.addHeader("Content-Type", "application/json");
+    agregarHeaderApiKey(http);
     if (_token.length() > 0) {
       http.addHeader("Authorization", String("Bearer ") + _token);
     }
@@ -270,6 +278,7 @@ private:
     }
 
     http.addHeader("Content-Type", "application/json");
+    agregarHeaderApiKey(http);
 
     StaticJsonDocument<128> doc;
     doc["username"] = API_USERNAME;
@@ -300,6 +309,7 @@ private:
     const char *headers[] = {"Set-Cookie"};
     http.collectHeaders(headers, 1);
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    agregarHeaderApiKey(http);
 
     String form = String("username=") + API_USERNAME + "&password=" + API_PASSWORD;
     int code = http.POST(form);
@@ -333,9 +343,9 @@ private:
 
     if (v.is<JsonObject>()) {
       JsonObject o = v.as<JsonObject>();
-      if (o.containsKey("actuador") && o.containsKey("estado")) {
+      if (o.containsKey("actuador") && o.containsKey("accion")) {
         actuador = String((const char *)o["actuador"]);
-        comando = String((const char *)o["estado"]);
+        comando = String((const char *)o["accion"]);
       } else {
         if (o.containsKey("riego")) {
           _riego.aplicarComando(String((const char *)o["riego"]));
