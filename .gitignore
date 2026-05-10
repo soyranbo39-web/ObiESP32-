@@ -198,6 +198,11 @@ AutoTest.Net/
 
 # DocProject is a documentation generator add-in
 DocProject/buildhelp/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
 DocProject/Help/*.HxT
 DocProject/Help/*.HxC
 DocProject/Help/*.hhc
