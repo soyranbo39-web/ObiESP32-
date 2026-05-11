@@ -6,8 +6,8 @@
 #include <ArduinoJson.h>
 #include <vector>
 
-const char *WIFI_SSID = "ASUS_A8_2G";
-const char *WIFI_PASSWORD = "purple_6667";
+const char *WIFI_SSID = "iPhone de Kevin";
+const char *WIFI_PASSWORD = "12345678";
 
 const char *API_BASE_URL = "https://apiobi-1.onrender.com";
 const char *API_USERNAME = "admin";
