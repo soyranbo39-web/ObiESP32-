@@ -2,13 +2,14 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <vector>
 
 const char *WIFI_SSID = "ASUS_A8_2G";
 const char *WIFI_PASSWORD = "purple_6667";
 
-const char *API_BASE_URL = "http://192.168.50.211:8000";
+const char *API_BASE_URL = "https://apiobi-1.onrender.com";
 const char *API_USERNAME = "admin";
 const char *API_PASSWORD = "123456";
 const char *API_KEY = "";
@@ -94,7 +95,9 @@ public:
 class APIClient {
 public:
   APIClient(Actuador &riego, Actuador &ventilador)
-      : _riego(riego), _ventilador(ventilador) {}
+      : _riego(riego), _ventilador(ventilador) {
+    _wifiClient.setInsecure();
+  }
 
   bool asegurarSesion() {
     if (login()) {
@@ -379,7 +382,7 @@ private:
     return false;
   }
 
-  WiFiClient _wifiClient;
+  WiFiClientSecure _wifiClient;
   Actuador &_riego;
   Actuador &_ventilador;
   String _token;
