@@ -4,15 +4,21 @@
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 #include <vector>
 
-const char *WIFI_SSID = "iPhone de Kevin";
-const char *WIFI_PASSWORD = "12345678";
+const char *WIFI_SSID = "Alumno";
+const char *WIFI_PASSWORD = "Mebe2ege";
 
 const char *API_BASE_URL = "https://apiobi-1.onrender.com";
 const char *API_USERNAME = "admin";
 const char *API_PASSWORD = "123456";
 const char *API_KEY = "";
+
+const char *MQTT_BROKER = "broker.hivemq.com";
+const uint16_t MQTT_PORT = 1883;
+const char *MQTT_USERNAME = "";
+const char *MQTT_PASSWORD = "";
 
 #ifndef DEVICE_ID
 #define DEVICE_ID "esp32-01"
@@ -26,8 +32,34 @@ const char *API_KEY = "";
 #define PIN_LED_VENTILADOR 27
 #endif
 
+#ifndef PIN_SENSOR_TEMP
+#ifdef A0
+#define PIN_SENSOR_TEMP A0
+#else
+#define PIN_SENSOR_TEMP 0
+#endif
+#endif
+
+#ifndef PIN_SENSOR_HUM
+#ifdef A1
+#define PIN_SENSOR_HUM A1
+#else
+#define PIN_SENSOR_HUM 1
+#endif
+#endif
+
+#ifndef PIN_SENSOR_CO2
+#ifdef A2
+#define PIN_SENSOR_CO2 A2
+#else
+#define PIN_SENSOR_CO2 2
+#endif
+#endif
+
 const unsigned long INTERVALO_SENSORES_MS = 5000;
 const unsigned long INTERVALO_COMANDOS_MS = 2500;
+const unsigned long INTERVALO_REINTENTO_MQTT_MS = 5000;
+const unsigned long INTERVALO_REINTENTO_WIFI_MS = 15000;
 
 const char *ENDPOINT_REGISTER = "/auth/register";
 const char *ENDPOINT_LOGIN = "/auth/token";
@@ -83,13 +115,64 @@ private:
 
 class SensorAmbiental {
 public:
-  SensorAmbiental() {}
+  SensorAmbiental(int pinTemp, int pinHum, int pinCo2)
+      : _pinTemp(pinTemp), _pinHum(pinHum), _pinCo2(pinCo2) {}
 
-  float temperatura() { return 20.0f + (float)(random(0, 2000)) / 100.0f; }
+  void inicializar() {
+    pinMode(_pinTemp, INPUT);
+    pinMode(_pinHum, INPUT);
+    pinMode(_pinCo2, INPUT);
+    analogReadResolution(12);
 
-  float humedad() { return 30.0f + (float)(random(0, 6000)) / 100.0f; }
+    Serial.printf("[Sensores] Temp=A0(%d), Hum=A1(%d), CO2=A2(%d)\n", _pinTemp,
+                  _pinHum, _pinCo2);
+  }
 
-  int co2() { return random(300, 901); }
+  float temperatura() {
+    int mv = leerMv(_pinTemp);
+    return mapearFloat((float)mv, 0.0f, 3300.0f, -10.0f, 60.0f);
+  }
+
+  float humedad() {
+    int mv = leerMv(_pinHum);
+    return mapearFloat((float)mv, 0.0f, 3300.0f, 0.0f, 100.0f);
+  }
+
+  int co2() {
+    int mv = leerMv(_pinCo2);
+    return (int)mapearFloat((float)mv, 0.0f, 3300.0f, 300.0f, 2000.0f);
+  }
+
+  void imprimirLecturas() {
+    Serial.printf("[Sensores] mV -> T:%d H:%d C:%d\n", leerMv(_pinTemp),
+                  leerMv(_pinHum), leerMv(_pinCo2));
+  }
+
+private:
+  int leerMv(int pin) {
+    int mv = analogReadMilliVolts(pin);
+    if (mv <= 0) {
+      int raw = analogRead(pin);
+      mv = (int)((raw * 3300.0f) / 4095.0f);
+    }
+    return constrain(mv, 0, 3300);
+  }
+
+  float mapearFloat(float x, float inMin, float inMax, float outMin,
+                    float outMax) {
+    if (x < inMin) {
+      x = inMin;
+    }
+    if (x > inMax) {
+      x = inMax;
+    }
+
+    return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+  }
+
+  int _pinTemp;
+  int _pinHum;
+  int _pinCo2;
 };
 
 class APIClient {
@@ -392,26 +475,49 @@ private:
 Actuador riego("riego", PIN_LED_RIEGO);
 Actuador ventilador("ventilador", PIN_LED_VENTILADOR);
 APIClient apiClient(riego, ventilador);
-SensorAmbiental sensor;
+SensorAmbiental sensor(PIN_SENSOR_TEMP, PIN_SENSOR_HUM, PIN_SENSOR_CO2);
+WiFiClient wifiClientMQTT;
+PubSubClient mqttClient(wifiClientMQTT);
+
+String topicDatos;
+String topicEstado;
+String topicCmdRiego;
+String topicCmdVentilador;
 
 unsigned long ultimaPublicacion = 0;
 unsigned long ultimaRevisionComandos = 0;
+unsigned long ultimoIntentoMQTT = 0;
+unsigned long ultimoIntentoWiFi = 0;
 
-void conectarWiFi() {
+bool conectarWiFi() {
+  ultimoIntentoWiFi = millis();
   Serial.printf("\n[WiFi] Conectando a '%s'", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long inicio = millis();
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() - inicio > 15000) {
-      Serial.println("\n[WiFi] Timeout. Reiniciando...");
-      ESP.restart();
+      Serial.println("\n[WiFi] Timeout. Seguire sin red por ahora.");
+      return false;
     }
     delay(500);
     Serial.print(".");
   }
 
   Serial.printf("\n[WiFi] Conectado. IP: %s\n", WiFi.localIP().toString().c_str());
+  return true;
+}
+
+void mantenerWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
+  }
+
+  if (millis() - ultimoIntentoWiFi < INTERVALO_REINTENTO_WIFI_MS) {
+    return;
+  }
+
+  conectarWiFi();
 }
 
 void asegurarSesionAPI() {
@@ -421,36 +527,147 @@ void asegurarSesionAPI() {
   }
 }
 
+void configurarTopicosMQTT() {
+  String base = String("obi/") + DEVICE_ID;
+  topicDatos = base + "/datos";
+  topicEstado = base + "/estado";
+  topicCmdRiego = base + "/cmd/riego";
+  topicCmdVentilador = base + "/cmd/ventilador";
+}
+
+void publicarEstadoMQTT() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  StaticJsonDocument<128> doc;
+  doc["dispositivo"] = DEVICE_ID;
+  doc["riego"] = riego.estadoStr();
+  doc["ventilador"] = ventilador.estadoStr();
+
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(topicEstado.c_str(), payload.c_str(), true);
+}
+
+void callbackMQTT(char *topic, byte *payload, unsigned int length) {
+  String mensaje;
+  mensaje.reserve(length);
+  for (unsigned int i = 0; i < length; i++) {
+    mensaje += (char)payload[i];
+  }
+
+  String topicRx = String(topic);
+  mensaje.trim();
+
+  if (topicRx == topicCmdRiego) {
+    riego.aplicarComando(mensaje);
+    apiClient.enviarControl(riego.nombre(), riego.estadoStr());
+    publicarEstadoMQTT();
+    return;
+  }
+
+  if (topicRx == topicCmdVentilador) {
+    ventilador.aplicarComando(mensaje);
+    apiClient.enviarControl(ventilador.nombre(), ventilador.estadoStr());
+    publicarEstadoMQTT();
+    return;
+  }
+}
+
+void conectarMQTT() {
+  if (mqttClient.connected()) {
+    return;
+  }
+
+  if (millis() - ultimoIntentoMQTT < INTERVALO_REINTENTO_MQTT_MS) {
+    return;
+  }
+  ultimoIntentoMQTT = millis();
+
+  String clientId = String(DEVICE_ID) + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  bool ok = false;
+
+  if (strlen(MQTT_USERNAME) > 0) {
+    ok = mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD);
+  } else {
+    ok = mqttClient.connect(clientId.c_str());
+  }
+
+  if (!ok) {
+    Serial.printf("[MQTT] Error conectando (%d)\n", mqttClient.state());
+    return;
+  }
+
+  mqttClient.subscribe(topicCmdRiego.c_str());
+  mqttClient.subscribe(topicCmdVentilador.c_str());
+  Serial.printf("[MQTT] Conectado. Subs: %s, %s\n", topicCmdRiego.c_str(),
+                topicCmdVentilador.c_str());
+  publicarEstadoMQTT();
+}
+
 void setup() {
   Serial.begin(115200);
-  randomSeed((uint32_t)micros());
+  delay(1200);
+  Serial.println("[System] Arrancando firmware...");
 
   riego.inicializar();
   ventilador.inicializar();
+  sensor.inicializar();
 
   conectarWiFi();
-  asegurarSesionAPI();
+  if (!apiClient.asegurarSesion()) {
+    Serial.println("[API] Sesion no disponible. El firmware seguira mostrando datos por serial.");
+  }
+
+  configurarTopicosMQTT();
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(callbackMQTT);
+  conectarMQTT();
+
+  Serial.println("[System] Firmware iniciado correctamente.");
 }
 
 void loop() {
   unsigned long ahora = millis();
 
+  mantenerWiFi();
+  conectarMQTT();
+  mqttClient.loop();
+
   if (ahora - ultimaRevisionComandos >= INTERVALO_COMANDOS_MS) {
     ultimaRevisionComandos = ahora;
     if (!apiClient.procesarComandosPendientes()) {
-      asegurarSesionAPI();
+      Serial.println("[API] No se pudieron procesar comandos pendientes en este ciclo.");
     }
   }
 
   if (ahora - ultimaPublicacion >= INTERVALO_SENSORES_MS) {
     ultimaPublicacion = ahora;
-
     float temp = sensor.temperatura();
     float hum = sensor.humedad();
     int co2 = sensor.co2();
 
+    Serial.printf("[Datos] Temp=%.2f C | Hum=%.2f %% | CO2=%d ppm | Riego=%s | Ventilador=%s | MQTT=%s\n",
+                  temp, hum, co2, riego.estadoStr(), ventilador.estadoStr(),
+                  mqttClient.connected() ? "ON" : "OFF");
+
     if (!apiClient.enviarDatos(temp, hum, co2)) {
-      asegurarSesionAPI();
+      Serial.println("[API] No se pudo enviar /datos en este ciclo.");
+    }
+
+    if (mqttClient.connected()) {
+      StaticJsonDocument<256> doc;
+      doc["dispositivo"] = DEVICE_ID;
+      doc["temp"] = temp;
+      doc["hum"] = hum;
+      doc["co2"] = co2;
+      doc["riego"] = riego.estadoStr();
+      doc["ventilador"] = ventilador.estadoStr();
+
+      String payload;
+      serializeJson(doc, payload);
+      mqttClient.publish(topicDatos.c_str(), payload.c_str(), false);
     }
   }
 
